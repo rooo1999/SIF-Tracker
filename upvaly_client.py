@@ -1,0 +1,432 @@
+"""
+Client for the finapi.upvaly.com mutual-fund / SIF API.
+
+NOTE ON RELIABILITY: this was written without live access to the API (the
+sandbox this was built in can't reach finapi.upvaly.com), so the exact JSON
+field names are an educated guess based on common conventions for this kind
+of API. Every parser below tries several likely key names before giving up,
+and `debug_fetch_scheme()` / the "Debug: raw API response" panel in the
+Streamlit app let you see the actual JSON. If a fund's category or NAV
+history isn't parsing correctly, grab that raw JSON and it's a one-line fix.
+"""
+
+import os
+import re
+import time
+import json
+import datetime as dt
+from pathlib import Path
+from urllib.parse import quote
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+import requests
+import pandas as pd
+
+BASE_URL = "https://finapi.upvaly.com"
+CACHE_DIR = Path(__file__).parent / "nav_cache"
+CACHE_DIR.mkdir(exist_ok=True)
+META_CACHE_FILE = CACHE_DIR / "scheme_meta.json"
+
+# The full list of SIF schemes to track.
+FUND_LIST = [
+    "Altiva Equity Ex- Top 100 Long - Short Fund - Regular Plan - Growth",
+    "Altiva Hybrid Long-Short Fund - Regular Plan - Growth",
+    "Apex Hybrid Long-Short Fund - Regular - Growth",
+    "Arthaya Equity Long Short Fund - Regular Plan - Growth Option",
+    "Arudha Equity Long-Short Fund-Regular Plan-Growth",
+    "Arudha Hybrid Long-Short Fund-Regular Plan-Growth",
+    "Diviniti Equity Long Short Fund - Regular Plan Growth Option",
+    "DynaSIF Active Asset Allocator Long-Short Fund - Regular Plan - Growth Option",
+    "DynaSIF Equity Ex-Top 100 Long - Short Fund - Regular Plan - Growth Option",
+    "DynaSIF Equity Long - Short Fund - Regular Plan - Growth Option",
+    "Sapphire Equity Long-Short SIF - Growth",
+    "RedHex Hybrid Long-Short Fund - Regular - Growth",
+    "Summit Equity Long-Short Fund - Regular Plan - Growth",
+    "iSIF Active Asset Allocator Long-Short Fund - Growth",
+    "iSIF Equity Ex-Top 100 Long-Short Fund - Growth",
+    "iSIF Equity Long-Short Fund - Growth",
+    "iSIF Hybrid Long-Short Fund - Growth",
+    "Prism Hybrid Long-Short Fund - Regular Plan- Growth Option",
+    "INFINITY HYBRID LONG-SHORT FUND-REGULAR - GROWTH",
+    "Magnum Hybrid Long Short Fund - Regular Plan - Growth",
+    "Platinum Hybrid Long-Short Fund - Regular Plan - Growth",
+    "qsif Active Asset Allocator Long-Short Fund - Growth Option - Regular Plan",
+    "qsif Equity Ex-Top 100 Long-Short Fund - Growth Option - Regular Plan",
+    "qsif Equity Long Short Fund - Growth Option - Regular Plan",
+    "qsif Hybrid Long-Short Fund - Growth Option - Regular Plan",
+    "qsif Sector Rotation Long-Short Fund - Growth Option - RegularPlan",
+    "WSIF Equity Ex-Top 100 Long-Short Fund - Regular Growth",
+    "WSIF Equity Long-Short Fund - Regular Growth",
+    "Titanium Equity Long-Short Fund Regular Growth",
+    "Titanium Hybrid Long-Short Fund Regular Plan Growth",
+]
+
+# scheme_name -> ISIN, used as the primary metadata lookup key (stable/exact —
+# no guessing at plan/option text formatting needed). Source: AMFI SIF NAV
+# name list matched 1:1 against FUND_LIST.
+FUND_ISIN_MAP = {
+    "Altiva Equity Ex- Top 100 Long - Short Fund - Regular Plan - Growth": "INF754K30136",
+    "DynaSIF Equity Ex-Top 100 Long - Short Fund - Regular Plan - Growth Option": "INF579M30133",
+    "iSIF Equity Ex-Top 100 Long-Short Fund - Growth": "INF109K30034",
+    "qsif Equity Ex-Top 100 Long-Short Fund - Growth Option - Regular Plan": "INF966L30183",
+    "WSIF Equity Ex-Top 100 Long-Short Fund - Regular Growth": "INF2F0030015",
+    "Arthaya Equity Long Short Fund - Regular Plan - Growth Option": "INF582M30012",
+    "Arudha Equity Long-Short Fund-Regular Plan-Growth": "INF194K30358",
+    "Diviniti Equity Long Short Fund - Regular Plan Growth Option": "INF00XX30019",
+    "DynaSIF Equity Long - Short Fund - Regular Plan - Growth Option": "INF579M30018",
+    "iSIF Equity Long-Short Fund - Growth": "INF109K30075",
+    "qsif Equity Long Short Fund - Growth Option - Regular Plan": "INF966L30027",
+    "Sapphire Equity Long-Short SIF - Growth": "INF090I30014",
+    "Summit Equity Long-Short Fund - Regular Plan - Growth": "INF205K30014",
+    "Titanium Equity Long-Short Fund Regular Growth": "INF277K30070",
+    "WSIF Equity Long-Short Fund - Regular Growth": "INF2F0030072",
+    "qsif Sector Rotation Long-Short Fund - Growth Option - RegularPlan": "INF966L30308",
+    "DynaSIF Active Asset Allocator Long-Short Fund - Regular Plan - Growth Option": "INF579M30075",
+    "iSIF Active Asset Allocator Long-Short Fund - Growth": "INF109K30059",
+    "qsif Active Asset Allocator Long-Short Fund - Growth Option - Regular Plan": "INF966L30217",
+    "Altiva Hybrid Long-Short Fund - Regular Plan - Growth": "INF754K30052",
+    "Apex Hybrid Long-Short Fund - Regular - Growth": "INF209K30040",
+    "Arudha Hybrid Long-Short Fund-Regular Plan-Growth": "INF194K30010",
+    "INFINITY HYBRID LONG-SHORT FUND-REGULAR - GROWTH": "INF174K30046",
+    "iSIF Hybrid Long-Short Fund - Growth": "INF109K30018",
+    "Magnum Hybrid Long Short Fund - Regular Plan - Growth": "INF200K30015",
+    "Platinum Hybrid Long-Short Fund - Regular Plan - Growth": "INF769K30019",
+    "Prism Hybrid Long-Short Fund - Regular Plan- Growth Option": "INF22M030019",
+    "qsif Hybrid Long-Short Fund - Growth Option - Regular Plan": "INF966L30084",
+    "RedHex Hybrid Long-Short Fund - Regular - Growth": "INF336L30015",
+    "Titanium Hybrid Long-Short Fund Regular Plan Growth": "INF277K30013",
+}
+
+# Earliest date to ask the API for when we have no cache yet. These are all
+# newly launched SIFs (~late 2025), but this is set conservatively low in
+# case older/other schemes get added later.
+FLOOR_DATE = dt.date(2020, 1, 1)
+
+_session = requests.Session()
+_session.headers.update({"User-Agent": "Mozilla/5.0 (fund-dashboard/1.0)"})
+
+# scheme_code -> last error string, for surfacing NAV-fetch failures in the UI
+LAST_NAV_ERRORS: dict = {}
+
+
+def _get_api_key():
+    """Reads the API key from (in order): the UPVALY_API_KEY env var, or
+    Streamlit secrets if running under Streamlit and a secrets.toml is
+    configured. NOT required for free-tier access (no signup needed) — this
+    is only useful if you upgrade to Pro (full field set) or start hitting
+    rate limits on the free tier. Set it with either:
+      export UPVALY_API_KEY="your-key-here"
+    or a .streamlit/secrets.toml containing:
+      UPVALY_API_KEY = "your-key-here"
+    Returns None if no key is configured, which is the expected default."""
+    key = os.environ.get("UPVALY_API_KEY")
+    if key:
+        return key
+    try:
+        import streamlit as st
+        return st.secrets.get("UPVALY_API_KEY")
+    except Exception:  # noqa: BLE001 - not running under Streamlit, or no secrets.toml
+        return None
+
+
+_api_key = _get_api_key()
+if _api_key:
+    _session.headers.update({"X-API-Key": _api_key})
+MISSING_API_KEY = _api_key is None
+
+
+def _get(url, params=None, retries=3, timeout=15):
+    """Retries on network-level failures (timeouts, connection errors) since
+    those can be transient. Does NOT retry on HTTP error status codes
+    (4xx/5xx) — a 500 right now will still be a 500 in 600ms, so retrying
+    those just wastes time (this was previously costing ~3-4s per failed
+    fund x 30 funds = minutes of dead time on every rerun)."""
+    last_err = None
+    for attempt in range(retries):
+        try:
+            resp = _session.get(url, params=params, timeout=timeout)
+            resp.raise_for_status()
+            return resp.json()
+        except requests.exceptions.HTTPError as e:
+            hint = ""
+            if e.response.status_code in (401, 403):
+                hint = (
+                    " (unexpected for free tier, which needs no key — check the "
+                    "response body for the actual cause)"
+                )
+            raise RuntimeError(f"GET {url} -> HTTP {e.response.status_code}{hint}: {e.response.text[:200]}") from None
+        except Exception as e:  # noqa: BLE001 - network/timeout errors: worth a couple retries
+            last_err = e
+            if attempt < retries - 1:
+                time.sleep(0.4 * (attempt + 1))
+    raise RuntimeError(f"GET {url} failed after {retries} attempts: {last_err}")
+
+
+# --------------------------------------------------------------------------
+# Flexible parsing helpers — try several likely key names.
+# --------------------------------------------------------------------------
+def _first_key(d: dict, keys, default=None):
+    for k in keys:
+        if isinstance(d, dict) and k in d and d[k] is not None:
+            return d[k]
+    return default
+
+
+def _unwrap(obj, wrapper_keys):
+    """If obj is a dict wrapping the real payload (e.g. {'data': {...}}),
+    unwrap it. Otherwise return obj unchanged."""
+    if isinstance(obj, dict):
+        for k in wrapper_keys:
+            if k in obj:
+                return obj[k]
+    return obj
+
+
+CODE_KEYS = ["schemeCode", "scheme_code", "code", "id", "schemeId"]
+CATEGORY_KEYS = [
+    "category", "schemeCategory", "scheme_category", "subCategory",
+    "sub_category", "fundCategory", "categoryName", "class", "schemeClass",
+    "type", "schemeType",
+]
+NAME_KEYS = ["schemeName", "scheme_name", "name"]
+INCEPTION_KEYS = ["inceptionDate", "inception_date"]
+FUND_HOUSE_KEYS = ["fundHouse", "fund_house", "companyName"]
+# Extra fields the current (2026) API returns that aren't used elsewhere in
+# the dashboard yet, but are cheap to capture for the debug panel / future use.
+PLAN_NAME_KEYS = ["planName", "plan_name", "plan"]
+OPTION_NAME_KEYS = ["optionName", "option_name", "option"]
+BENCHMARK_KEYS = ["benchmarkIndex", "benchmark_index", "benchmark"]
+AUM_KEYS = ["aum"]
+EXPENSE_RATIO_KEYS = ["expenseRatio", "expense_ratio"]
+EXIT_LOAD_KEYS = ["exitLoadMessage", "exit_load_message", "exitLoad"]
+
+# Tokens that indicate plan/option, stripped from the tail of a FUND_LIST
+# entry to recover the "bare" scheme name the API now wants as a separate
+# path segment (plan and option are now their own required query params).
+_PLAN_OPTION_TOKEN = r"(?:Regular\s*Plan|Direct\s*Plan|Regular|Direct|Growth\s*Option|Growth|Option)"
+_SEP = r"(?:\s*-\s*|\s+)"
+_TAIL_RE = re.compile(rf"(?:{_SEP}{_PLAN_OPTION_TOKEN})+\s*$", re.IGNORECASE)
+
+
+def split_scheme_name(full_name: str) -> str:
+    """'Altiva Equity Ex- Top 100 Long - Short Fund - Regular Plan - Growth'
+    -> 'Altiva Equity Ex- Top 100 Long - Short Fund'. Every FUND_LIST entry
+    encodes plan=Regular Plan / option=Growth Option in varying, inconsistent
+    text formats (some say 'Regular', some omit it entirely, word order
+    varies) — this strips all of that from the tail, since plan/option are
+    now sent as their own query params instead."""
+    return _TAIL_RE.sub("", full_name).strip(" -")
+NAV_LIST_WRAPPER_KEYS = ["navHistory", "nav_history", "history", "navs", "data", "result", "nav"]
+NAV_DATE_KEYS = ["date", "navDate", "nav_date", "asOfDate", "as_of_date"]
+NAV_VALUE_KEYS = ["nav", "navValue", "nav_value", "value", "netAssetValue"]
+
+
+def parse_scheme_meta(raw: dict) -> dict:
+    """Extract {scheme_code, scheme_name, category, inception_date,
+    fund_house} from a scheme-name response. Response is wrapped as
+    {"status": "success", "data": {...}} — an explicit non-success status
+    is treated as an error."""
+    if isinstance(raw, dict) and raw.get("status") not in (None, "success"):
+        raise RuntimeError(f"API returned status={raw.get('status')!r}: {raw.get('message')}")
+    payload = _unwrap(raw, ["data", "scheme", "result"])
+    if isinstance(payload, list) and payload:
+        payload = payload[0]
+    code = _first_key(payload, CODE_KEYS)
+    category = _first_key(payload, CATEGORY_KEYS, default="Unknown")
+    name = _first_key(payload, NAME_KEYS)
+    inception = _first_key(payload, INCEPTION_KEYS)
+    fund_house = _first_key(payload, FUND_HOUSE_KEYS)
+    # Captured for the debug panel / possible future use — not consumed by
+    # the rest of the dashboard yet.
+    plan_name = _first_key(payload, PLAN_NAME_KEYS)
+    option_name = _first_key(payload, OPTION_NAME_KEYS)
+    benchmark_index = _first_key(payload, BENCHMARK_KEYS)
+    aum = _first_key(payload, AUM_KEYS)
+    expense_ratio = _first_key(payload, EXPENSE_RATIO_KEYS)
+    exit_load = _first_key(payload, EXIT_LOAD_KEYS)
+    return {
+        "scheme_code": code, "scheme_name": name, "category": category,
+        "inception_date": inception, "fund_house": fund_house,
+        "plan_name": plan_name, "option_name": option_name,
+        "benchmark_index": benchmark_index, "aum": aum,
+        "expense_ratio": expense_ratio, "exit_load": exit_load, "raw": raw,
+    }
+
+
+def parse_nav_entries(raw) -> pd.DataFrame:
+    """Extract a (date, nav) DataFrame from a NAV-history-shaped response.
+    Handles both a bare list and the confirmed real shape
+    {"status": "success", "data": {"navHistory": [{"navDate":..,"nav":..}]}}."""
+    if isinstance(raw, dict) and raw.get("status") not in (None, "success"):
+        return pd.DataFrame(columns=["date", "nav"])
+    entries = _unwrap(raw, NAV_LIST_WRAPPER_KEYS)
+    if isinstance(entries, dict):
+        # sometimes a dict itself wraps one more level, e.g. {"navHistory": {"data": [...]}}
+        entries = _unwrap(entries, NAV_LIST_WRAPPER_KEYS)
+    if not isinstance(entries, list):
+        return pd.DataFrame(columns=["date", "nav"])
+
+    rows = []
+    for e in entries:
+        if not isinstance(e, dict):
+            continue
+        d = _first_key(e, NAV_DATE_KEYS)
+        v = _first_key(e, NAV_VALUE_KEYS)
+        if d is None or v is None:
+            continue
+        rows.append({"date": d, "nav": v})
+    if not rows:
+        return pd.DataFrame(columns=["date", "nav"])
+    df = pd.DataFrame(rows)
+    df["date"] = pd.to_datetime(df["date"], errors="coerce", dayfirst=False)
+    df["nav"] = pd.to_numeric(df["nav"], errors="coerce")
+    df = df.dropna(subset=["date", "nav"]).drop_duplicates("date").sort_values("date")
+    return df.reset_index(drop=True)
+
+
+# --------------------------------------------------------------------------
+# Public fetch functions
+# --------------------------------------------------------------------------
+def fetch_scheme_meta_by_isin(isin: str) -> dict:
+    """Primary metadata lookup: GET /api/mf/isin/{isin}. ISIN is a stable,
+    exact identifier — no plan/option text-matching involved, so this
+    sidesteps every formatting inconsistency in FUND_LIST entirely."""
+    url = f"{BASE_URL}/api/mf/isin/{quote(isin, safe='')}"
+    return _get(url)
+
+
+def fetch_scheme_meta_raw(scheme_name: str, plan: str = "Regular Plan", option: str = "Growth Option") -> dict:
+    """Looks up metadata for a FUND_LIST-style scheme name. Uses the ISIN
+    endpoint when the name is in FUND_ISIN_MAP (exact match, no guessing);
+    falls back to the name/plan/option endpoint otherwise — kept as a
+    fallback in case a fund is ever added to FUND_LIST without an ISIN.
+
+    The fallback path: the API takes the *bare* scheme name as the path
+    segment plus required 'plan'/'option' query params — e.g.
+    schemeName='Altiva Equity Ex- Top 100 Long - Short Fund',
+    plan='Regular Plan', option='Growth Option'. `scheme_name` may be passed
+    either bare or as a full FUND_LIST entry with the plan/option baked into
+    the tail — split_scheme_name() strips that tail if present.
+    """
+    isin = FUND_ISIN_MAP.get(scheme_name)
+    if isin:
+        return fetch_scheme_meta_by_isin(isin)
+    bare_name = split_scheme_name(scheme_name)
+    url = f"{BASE_URL}/api/mf/scheme-name/{quote(bare_name, safe='')}"
+    return _get(url, params={"plan": plan, "option": option})
+
+
+def fetch_nav_range_raw(scheme_code, start: dt.date, end: dt.date) -> dict:
+    """Fetches NAV history for a scheme, requesting the full available
+    range. NOTE: an earlier version called this bare (no params) based on
+    one working sample, but that turned out to 500 on every fund — so this
+    sends a single clean startDate/endDate pair instead of guessing at
+    multiple param names simultaneously. If this still 500s, the response
+    body (now included in the error message) should say why."""
+    url = f"{BASE_URL}/api/mf/scheme-code/{scheme_code}/nav"
+    params = {"startDate": start.isoformat(), "endDate": end.isoformat()}
+    return _get(url, params=params)
+
+
+def load_scheme_meta_cache() -> dict:
+    if META_CACHE_FILE.exists():
+        try:
+            return json.loads(META_CACHE_FILE.read_text())
+        except Exception:  # noqa: BLE001
+            return {}
+    return {}
+
+
+def save_scheme_meta_cache(meta: dict):
+    META_CACHE_FILE.write_text(json.dumps(meta, indent=2, default=str))
+
+
+def get_all_scheme_meta(fund_list=None, force_refresh=False, progress_cb=None, max_workers=10) -> dict:
+    """Returns {scheme_name: {scheme_code, category, ...}} for every fund in
+    fund_list, using a disk cache so we don't hit the API every run.
+    Only successful lookups are cached — a failed lookup is retried on the
+    next run automatically instead of being stuck as a permanent failure.
+    Uncached names are looked up concurrently."""
+    fund_list = fund_list or FUND_LIST
+    meta = {} if force_refresh else load_scheme_meta_cache()
+    changed = False
+
+    to_fetch = [n for n in fund_list if not (meta.get(n) or {}).get("scheme_code")]
+
+    def _lookup(name):
+        try:
+            raw = fetch_scheme_meta_raw(name)
+            parsed = parse_scheme_meta(raw)
+            parsed.pop("raw", None)
+            return name, parsed, None
+        except Exception as e:  # noqa: BLE001
+            return name, {"scheme_code": None, "scheme_name": name, "category": "Unknown", "error": str(e)}, e
+
+    if to_fetch:
+        done = 0
+        with ThreadPoolExecutor(max_workers=min(max_workers, len(to_fetch))) as pool:
+            futures = [pool.submit(_lookup, name) for name in to_fetch]
+            for future in as_completed(futures):
+                name, parsed, err = future.result()
+                meta[name] = parsed
+                if err is None:
+                    changed = True
+                done += 1
+                if progress_cb:
+                    progress_cb(done, len(to_fetch), name)
+    if changed:
+        save_scheme_meta_cache({k: v for k, v in meta.items() if v.get("scheme_code")})
+    return meta
+
+
+def _fund_cache_file(scheme_code) -> Path:
+    return CACHE_DIR / f"scheme_{scheme_code}.csv"
+
+
+def get_full_nav_history(scheme_code, scheme_name="") -> pd.DataFrame:
+    """Loads cached NAV history from disk and fetches only the missing
+    (incremental) date range from the API, so repeated runs are cheap.
+    Any fetch error is stashed on LAST_NAV_ERRORS[scheme_code] instead of
+    being silently swallowed, so the caller can surface it."""
+    cache_file = _fund_cache_file(scheme_code)
+    if cache_file.exists():
+        cached = pd.read_csv(cache_file, parse_dates=["date"])
+    else:
+        cached = pd.DataFrame(columns=["date", "nav"])
+
+    today = pd.Timestamp(dt.date.today())
+    if cached.empty:
+        fetch_start = FLOOR_DATE
+    else:
+        fetch_start = (cached["date"].max() + pd.Timedelta(days=1)).date()
+
+    # fetch_start/today define the range actually requested from the API
+    # (skips the call entirely if we already have today's NAV cached).
+    if fetch_start <= dt.date.today():
+        try:
+            raw = fetch_nav_range_raw(scheme_code, fetch_start, dt.date.today())
+            new_df = parse_nav_entries(raw)
+            if new_df.empty and cached.empty:
+                # got a response but couldn't extract any rows from it —
+                # worth flagging even though it's not an exception
+                LAST_NAV_ERRORS[scheme_code] = "API responded but no NAV rows could be parsed from it (check Debug panel)"
+            else:
+                LAST_NAV_ERRORS.pop(scheme_code, None)
+            if not new_df.empty:
+                cached = (
+                    pd.concat([cached, new_df], ignore_index=True)
+                    .drop_duplicates("date")
+                    .sort_values("date")
+                    .reset_index(drop=True)
+                )
+                cached.to_csv(cache_file, index=False)
+        except Exception as e:  # noqa: BLE001
+            LAST_NAV_ERRORS[scheme_code] = str(e)
+            # fall back to whatever's cached
+
+    return cached
+
+
+def debug_fetch_scheme(scheme_name: str):
+    """Returns the raw JSON for one scheme-name lookup, for the debug panel."""
+    return fetch_scheme_meta_raw(scheme_name)
