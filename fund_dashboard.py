@@ -28,58 +28,190 @@ st.set_page_config(
 BENCHMARK_NAMES = {"Nifty 50", "Nifty 500", "NIFTY 50", "NIFTY 500"}
 
 # --------------------------------------------------------------------------
-# Look & feel — clean, HNI-client-facing styling. Hides Streamlit chrome
-# (menu / footer / "Deploy" bar) and applies a restrained, professional
-# colour palette.
+# Look & feel — rich, elegant dark theme built for an HNI-client audience.
 # --------------------------------------------------------------------------
-PRIMARY = "#0B1F3A"      # deep navy
-ACCENT = "#B8892E"       # muted gold
-POSITIVE = "#1B7A43"
-NEGATIVE = "#B02A2A"
-MUTED = "#6B7280"
+BG = "#0B1220"           # page background
+CARD_BG = "#131B2E"      # panels / tables / chart card
+CARD_BG_ALT = "#161F36"  # zebra striping / hover
+BORDER = "#242D42"
+PRIMARY = "#F1F4F8"      # heading / primary text
+BODY_TEXT = "#C9D1DD"    # table body text
+MUTED = "#8B95A5"
+ACCENT = "#D4AF37"       # gold
+ACCENT_SOFT = "rgba(212, 175, 55, 0.10)"
+POSITIVE = "#3ECF8E"
+NEGATIVE = "#FF6B6B"
+
+PALETTE = [
+    "#4FD1C5", "#D4AF37", "#818CF8", "#FF8A65", "#34D399",
+    "#60A5FA", "#F472B6", "#FBBF24", "#A78BFA", "#F87171",
+]
 
 st.markdown(
     f"""
+    <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
         #MainMenu {{visibility: hidden;}}
         footer {{visibility: hidden;}}
         header {{visibility: hidden;}}
 
-        .block-container {{
-            padding-top: 1.6rem;
-            padding-bottom: 2.5rem;
+        html, body, .stApp {{
+            background-color: {BG};
+            font-family: 'Inter', sans-serif;
         }}
 
-        h1, h2, h3 {{
+        .block-container {{
+            padding-top: 1.8rem;
+            padding-bottom: 3rem;
+            max-width: 1400px;
+        }}
+
+        h1, h2, h3, h4, h5 {{
             color: {PRIMARY};
+            font-family: 'Playfair Display', serif;
             font-weight: 650;
+            letter-spacing: 0.01em;
         }}
 
         .dash-title {{
-            font-size: 1.9rem;
+            font-family: 'Playfair Display', serif;
+            font-size: 2.1rem;
             font-weight: 700;
-            color: {PRIMARY};
-            margin-bottom: 0.1rem;
+            color: {ACCENT};
+            margin-bottom: 0.15rem;
+            letter-spacing: 0.01em;
         }}
         .dash-subtitle {{
             color: {MUTED};
             font-size: 0.95rem;
-            margin-bottom: 1.4rem;
+            margin-bottom: 1.6rem;
+            font-family: 'Inter', sans-serif;
         }}
         .section-divider {{
             border: none;
-            border-top: 1px solid #E5E7EB;
-            margin: 1.8rem 0 1.2rem 0;
+            border-top: 1px solid {BORDER};
+            margin: 2rem 0 1.3rem 0;
         }}
+        .section-caption {{
+            color: {MUTED};
+            font-size: 0.85rem;
+            margin-bottom: 0.9rem;
+            line-height: 1.5;
+        }}
+
         [data-testid="stMetricValue"] {{
             color: {PRIMARY};
         }}
-        .stDataFrame {{
-            border: 1px solid #E5E7EB;
-            border-radius: 6px;
+
+        /* Plotly chart card */
+        [data-testid="stPlotlyChart"] {{
+            background-color: {CARD_BG};
+            border: 1px solid {BORDER};
+            border-radius: 12px;
+            padding: 14px;
+            box-shadow: 0 8px 28px rgba(0,0,0,0.4);
         }}
+
+        /* Sidebar */
         section[data-testid="stSidebar"] {{
-            background-color: #F7F8FA;
+            background-color: {CARD_BG};
+            border-right: 1px solid {BORDER};
+        }}
+        section[data-testid="stSidebar"] h3 {{
+            color: {ACCENT};
+            font-size: 0.95rem;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            font-family: 'Inter', sans-serif;
+            font-weight: 600;
+            margin-top: 1.2rem;
+            margin-bottom: 0.5rem;
+        }}
+
+        /* Buttons */
+        .stButton>button {{
+            background-color: transparent;
+            color: {ACCENT};
+            border: 1px solid {ACCENT};
+            border-radius: 6px;
+            font-weight: 500;
+            transition: all 0.15s ease;
+        }}
+        .stButton>button:hover {{
+            background-color: {ACCENT_SOFT};
+            border-color: {ACCENT};
+            color: {ACCENT};
+        }}
+
+        /* Inputs */
+        div[data-baseweb="select"] > div,
+        .stDateInput input {{
+            background-color: {CARD_BG_ALT} !important;
+            border-color: {BORDER} !important;
+            color: {PRIMARY} !important;
+            border-radius: 6px !important;
+        }}
+
+        /* HNI-styled static tables */
+        .hni-table-wrap {{
+            background-color: {CARD_BG};
+            border: 1px solid {BORDER};
+            border-radius: 12px;
+            padding: 6px;
+            margin-bottom: 0.6rem;
+            box-shadow: 0 8px 28px rgba(0,0,0,0.4);
+            overflow-x: auto;
+        }}
+        .hni-table-wrap table {{
+            width: 100%;
+            border-collapse: collapse;
+            background: transparent;
+            font-family: 'Inter', sans-serif;
+        }}
+        .hni-table-wrap thead th {{
+            background-color: {CARD_BG_ALT};
+            color: {ACCENT};
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+            font-size: 0.72rem;
+            font-weight: 600;
+            padding: 12px 16px;
+            border-bottom: 1px solid {BORDER};
+            text-align: right;
+            white-space: nowrap;
+        }}
+        .hni-table-wrap thead th:first-child {{
+            text-align: left;
+        }}
+        .hni-table-wrap tbody th {{
+            padding: 10px 16px;
+            border-bottom: 1px solid {BORDER};
+            color: {PRIMARY};
+            font-weight: 500;
+            text-align: left;
+            white-space: nowrap;
+            background: transparent;
+        }}
+        .hni-table-wrap tbody td {{
+            padding: 10px 16px;
+            border-bottom: 1px solid {BORDER};
+            color: {BODY_TEXT};
+            font-size: 0.86rem;
+            text-align: right;
+            white-space: nowrap;
+            font-variant-numeric: tabular-nums;
+        }}
+        .hni-table-wrap tbody tr:last-child th,
+        .hni-table-wrap tbody tr:last-child td {{
+            border-bottom: none;
+        }}
+        .hni-table-wrap tbody tr:hover td,
+        .hni-table-wrap tbody tr:hover th {{
+            background-color: {ACCENT_SOFT};
+        }}
+        .hni-table-scroll {{
+            max-height: 420px;
+            overflow-y: auto;
         }}
     </style>
     """,
@@ -290,7 +422,10 @@ def build_risk_table(window: pd.DataFrame, cols, reference_benchmark: str):
 
 
 # --------------------------------------------------------------------------
-# Styling helpers for polished, HNI-facing tables
+# Table rendering — precise per-table decimal control + rich dark styling.
+# Rendered as static HTML (via pandas Styler) rather than st.dataframe so
+# the full HNI table design (header, banding, colours) is guaranteed to
+# render, independent of the Streamlit grid component's own theming.
 # --------------------------------------------------------------------------
 def _color_signed(val):
     if pd.isna(val):
@@ -299,17 +434,57 @@ def _color_signed(val):
         return f"color: {POSITIVE}; font-weight: 600"
     if val < 0:
         return f"color: {NEGATIVE}; font-weight: 600"
-    return ""
+    return f"color: {BODY_TEXT}"
 
 
-def style_return_table(df: pd.DataFrame, pct_cols):
-    fmt = {c: "{:.2f}%" for c in pct_cols if c in df.columns}
+def _color_ratio(val, pivot=1.0):
+    if pd.isna(val):
+        return f"color: {MUTED}"
+    if val > pivot:
+        return f"color: {POSITIVE}; font-weight: 600"
+    if val < pivot:
+        return f"color: {NEGATIVE}; font-weight: 600"
+    return f"color: {BODY_TEXT}"
+
+
+def render_table(
+    df: pd.DataFrame,
+    decimals=2,
+    pct_cols=(),
+    ratio_cols=(),
+    color_pct_cols=(),
+    color_ratio_cols=(),
+    scroll=False,
+):
+    """Render a DataFrame as a styled, static HNI-look table.
+
+    - `pct_cols`: numeric columns formatted with `decimals` places + a % sign.
+    - `ratio_cols`: numeric columns formatted with `decimals` places, no %.
+    - Any other numeric column defaults to `decimals` places, no %.
+    - `color_pct_cols` / `color_ratio_cols`: which columns get green/red
+      sign-based colouring (ratio columns are coloured around a pivot of 1.0).
+    """
+    fmt = {}
+    for c in df.columns:
+        if c in pct_cols:
+            fmt[c] = f"{{:.{decimals}f}}%"
+        elif c in ratio_cols:
+            fmt[c] = f"{{:.{decimals}f}}"
+        elif pd.api.types.is_numeric_dtype(df[c]):
+            fmt[c] = f"{{:.{decimals}f}}"
+
     styler = df.style.format(fmt, na_rep="—")
     map_fn = styler.map if hasattr(styler, "map") else styler.applymap
-    for c in pct_cols:
+    for c in color_pct_cols:
         if c in df.columns:
             styler = map_fn(_color_signed, subset=[c])
-    return styler
+    for c in color_ratio_cols:
+        if c in df.columns:
+            styler = map_fn(_color_ratio, subset=[c])
+
+    html = styler.to_html()
+    wrap_class = "hni-table-wrap hni-table-scroll" if scroll else "hni-table-wrap"
+    st.markdown(f'<div class="{wrap_class}">{html}</div>', unsafe_allow_html=True)
 
 
 # --------------------------------------------------------------------------
@@ -423,23 +598,23 @@ if not plot_cols:
 st.markdown(f"#### Performance: {actual_start.date():%d %b %Y} — {actual_end.date():%d %b %Y}")
 
 if actual_start.date() != start_date or actual_end.date() != end_date:
-    st.caption(
-        f"Dates snapped to the nearest available trading days: "
-        f"{actual_start.date():%d %b %Y} / {actual_end.date():%d %b %Y}."
+    st.markdown(
+        f'<div class="section-caption">Dates snapped to the nearest available trading days: '
+        f'{actual_start.date():%d %b %Y} / {actual_end.date():%d %b %Y}.</div>',
+        unsafe_allow_html=True,
     )
 
 if excluded_funds:
-    st.caption(f"Not shown (incomplete data for this period): {', '.join(excluded_funds)}")
+    st.markdown(
+        f'<div class="section-caption">Not shown (incomplete data for this period): '
+        f'{", ".join(excluded_funds)}</div>',
+        unsafe_allow_html=True,
+    )
 
 # --------------------------------------------------------------------------
 # Indexed journey
 # --------------------------------------------------------------------------
 indexed = build_indexed(window, plot_cols, base=100.0)
-
-PALETTE = [
-    "#0B1F3A", "#B8892E", "#2E7D5B", "#8E44AD", "#C0392B",
-    "#1F6FB2", "#D68910", "#5D6D7E", "#117864", "#943126",
-]
 
 fig = go.Figure()
 color_i = 0
@@ -465,19 +640,20 @@ fig.update_layout(
     hovermode="x unified",
     yaxis_title="Indexed Value (Start = 100)",
     xaxis_title="Date",
-    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1, font=dict(color=BODY_TEXT)),
     margin=dict(t=30, b=10),
-    plot_bgcolor="white",
-    font=dict(color=PRIMARY),
+    plot_bgcolor=CARD_BG,
+    paper_bgcolor="rgba(0,0,0,0)",
+    font=dict(color=BODY_TEXT, family="Inter, sans-serif"),
 )
-fig.update_xaxes(showgrid=True, gridcolor="#EEF0F3")
-fig.update_yaxes(showgrid=True, gridcolor="#EEF0F3")
+fig.update_xaxes(showgrid=True, gridcolor=BORDER, zeroline=False)
+fig.update_yaxes(showgrid=True, gridcolor=BORDER, zeroline=False)
 st.plotly_chart(fig, use_container_width=True)
 
 st.markdown('<hr class="section-divider" />', unsafe_allow_html=True)
 
 # --------------------------------------------------------------------------
-# Summary — Selected Period Return (always sorted high → low)
+# Summary — Selected Period Return (always sorted high → low, 2 decimals)
 # --------------------------------------------------------------------------
 st.markdown("#### Summary — Selected Period Return")
 period_summary = pd.DataFrame({
@@ -485,29 +661,33 @@ period_summary = pd.DataFrame({
     "End NAV": window[plot_cols].iloc[-1],
     "Indexed End (Start=100)": indexed[plot_cols].iloc[-1],
     "Period Return (%)": (indexed[plot_cols].iloc[-1] - 100),
-}).round(2)
+})
 period_summary.index.name = "Fund"
 period_summary = period_summary.sort_values("Period Return (%)", ascending=False)
 
-st.dataframe(
-    style_return_table(period_summary, ["Period Return (%)"]),
-    use_container_width=True,
+render_table(
+    period_summary,
+    decimals=2,
+    pct_cols=["Period Return (%)"],
+    color_pct_cols=["Period Return (%)"],
 )
 
 st.markdown('<hr class="section-divider" />', unsafe_allow_html=True)
 
 # --------------------------------------------------------------------------
-# Indexed values table
+# Indexed values table (2 decimals)
 # --------------------------------------------------------------------------
 st.markdown("#### Indexed NAV Table (Start = 100)")
 display_indexed = indexed.copy()
 display_indexed["Date"] = display_indexed["Date"].dt.strftime("%d %b %Y")
-st.dataframe(display_indexed.round(2), use_container_width=True, height=350)
+display_indexed = display_indexed.set_index("Date")
+render_table(display_indexed, decimals=2, scroll=True)
 
 st.markdown('<hr class="section-divider" />', unsafe_allow_html=True)
 
 # --------------------------------------------------------------------------
-# Risk & Capture Ratio table (selected period — updates with date range)
+# Risk & Capture Ratio table (selected period — updates with date range,
+# everything rounded to a single decimal place)
 # --------------------------------------------------------------------------
 st.markdown("#### Risk & Capture Ratio — Selected Period")
 
@@ -526,38 +706,42 @@ if reference_benchmark is None:
     st.info("Select at least one benchmark to view risk & capture-ratio metrics.")
 else:
     risk_table = build_risk_table(window, plot_cols, reference_benchmark)
-    risk_table = risk_table.round(2)
-    st.caption(
-        f"Computed over the selected period, measured against {reference_benchmark}. "
-        "Standard deviation is annualized; up/down capture reflect compounded returns "
-        "on days the benchmark was positive / negative respectively."
+    st.markdown(
+        f'<div class="section-caption">Computed over the selected period, measured against '
+        f'{reference_benchmark}. Standard deviation is annualized; up/down capture reflect '
+        f'compounded returns on days the benchmark was positive / negative respectively.</div>',
+        unsafe_allow_html=True,
     )
-    st.dataframe(
-        style_return_table(
-            risk_table,
-            ["Max Drawdown (%)", "Up Capture (%)", "Down Capture (%)"],
-        ),
-        use_container_width=True,
+    render_table(
+        risk_table,
+        decimals=1,
+        pct_cols=["Std Dev (Ann., %)", "Max Drawdown (%)", "Up Capture (%)", "Down Capture (%)"],
+        ratio_cols=["Capture Ratio"],
+        color_pct_cols=["Max Drawdown (%)", "Up Capture (%)", "Down Capture (%)"],
+        color_ratio_cols=["Capture Ratio"],
     )
 
 st.markdown('<hr class="section-divider" />', unsafe_allow_html=True)
 
 # --------------------------------------------------------------------------
-# Trailing returns table (uses FULL history, as-of end_date)
+# Trailing returns table (uses FULL history, as-of end_date, 2 decimals)
 # --------------------------------------------------------------------------
 st.markdown("#### Trailing Returns")
-st.caption(
-    "Computed on each fund's/benchmark's full available history as of the "
-    "selected end date. Periods of 1 year or more are annualized (CAGR); "
-    "shorter periods are absolute returns."
+st.markdown(
+    '<div class="section-caption">Computed on each fund\'s/benchmark\'s full available history as of the '
+    'selected end date. Periods of 1 year or more are annualized (CAGR); '
+    'shorter periods are absolute returns.</div>',
+    unsafe_allow_html=True,
 )
 trailing_cols = all_cols
-trailing_table = build_trailing_table(df, trailing_cols, actual_end).round(2)
-return_cols = [c for c in trailing_table.columns]
-st.dataframe(
-    style_return_table(trailing_table, return_cols),
-    use_container_width=True,
-    height=400,
+trailing_table = build_trailing_table(df, trailing_cols, actual_end)
+return_cols = list(trailing_table.columns)
+render_table(
+    trailing_table,
+    decimals=2,
+    pct_cols=return_cols,
+    color_pct_cols=return_cols,
+    scroll=True,
 )
 
 st.markdown('<hr class="section-divider" />', unsafe_allow_html=True)
