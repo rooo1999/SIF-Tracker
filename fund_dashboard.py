@@ -2,8 +2,8 @@
 SIF Performance Dashboard (Client Edition)
 -------------------------------------------
 Presents fund performance against Nifty 50 / Nifty 500 benchmarks over any
-selected date range: indexed growth chart, period return summary, indexed
-NAV table, risk & capture-ratio table, and trailing returns.
+selected date range: indexed growth chart, period return summary,
+risk & capture-ratio table, and trailing returns.
 
 Data is fetched automatically from the fund NAV API and yfinance; no manual
 data-source selection or debug tooling is exposed to the end user.
@@ -700,17 +700,6 @@ render_table(
     pct_cols=["Period Return (%)"],
     color_pct_cols=["Period Return (%)"],
 )
-
-st.markdown('<hr class="section-divider" />', unsafe_allow_html=True)
-
-# --------------------------------------------------------------------------
-# Indexed values table (2 decimals)
-# --------------------------------------------------------------------------
-st.markdown("#### Indexed NAV Table (Start = 100)")
-display_indexed = indexed.copy()
-display_indexed["Date"] = display_indexed["Date"].dt.strftime("%d %b %Y")
-display_indexed = display_indexed.set_index("Date")
-render_table(display_indexed, decimals=2, scroll=True)
 
 st.markdown('<hr class="section-divider" />', unsafe_allow_html=True)
 
