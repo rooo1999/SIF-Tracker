@@ -53,7 +53,7 @@ st.markdown(
     <style>
         #MainMenu {{visibility: hidden;}}
         footer {{visibility: hidden;}}
-        header {{visibility: hidden;}}
+        [data-testid="stHeader"] {{visibility: hidden;}}
 
         html, body, .stApp {{
             background-color: {BG};
