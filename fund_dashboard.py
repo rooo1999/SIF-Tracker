@@ -447,6 +447,23 @@ def _color_ratio(val, pivot=1.0):
     return f"color: {BODY_TEXT}"
 
 
+def _color_pivot(val, pivot, higher_is_better=True):
+    """Colour a value green/red based on which side of `pivot` it falls on
+    (rather than which side of zero). Used for capture-ratio-style metrics
+    where the meaningful threshold is 100% / 1.0, not 0 — e.g. a Down
+    Capture of -20% (fund rose while the benchmark fell) is favourable and
+    must show green, even though the raw number is negative; a Down
+    Capture of 130% is unfavourable and must show red, even though the raw
+    number is positive."""
+    if pd.isna(val):
+        return f"color: {MUTED}"
+    if val == pivot:
+        return f"color: {BODY_TEXT}"
+    is_better = (val > pivot) if higher_is_better else (val < pivot)
+    color = POSITIVE if is_better else NEGATIVE
+    return f"color: {color}; font-weight: 600"
+
+
 def render_table(
     df: pd.DataFrame,
     decimals=2,
@@ -454,6 +471,7 @@ def render_table(
     ratio_cols=(),
     color_pct_cols=(),
     color_ratio_cols=(),
+    color_pivot_cols=None,
     scroll=False,
 ):
     """Render a DataFrame as a styled, static HNI-look table.
@@ -461,9 +479,14 @@ def render_table(
     - `pct_cols`: numeric columns formatted with `decimals` places + a % sign.
     - `ratio_cols`: numeric columns formatted with `decimals` places, no %.
     - Any other numeric column defaults to `decimals` places, no %.
-    - `color_pct_cols` / `color_ratio_cols`: which columns get green/red
-      sign-based colouring (ratio columns are coloured around a pivot of 1.0).
+    - `color_pct_cols` / `color_ratio_cols`: sign-based green/red colouring
+      (pivot at 0 — for genuine returns, where positive is always favourable).
+    - `color_pivot_cols`: dict of {column: (pivot, higher_is_better)} for
+      metrics where the meaningful threshold isn't zero — e.g. capture
+      ratios, where the pivot is 100% / 1.0 and a negative raw number can
+      still be the favourable outcome (see Down Capture).
     """
+    color_pivot_cols = color_pivot_cols or {}
     fmt = {}
     for c in df.columns:
         if c in pct_cols:
@@ -481,6 +504,12 @@ def render_table(
     for c in color_ratio_cols:
         if c in df.columns:
             styler = map_fn(_color_ratio, subset=[c])
+    for c, (pivot, higher_is_better) in color_pivot_cols.items():
+        if c in df.columns:
+            styler = map_fn(
+                lambda v, p=pivot, h=higher_is_better: _color_pivot(v, p, h),
+                subset=[c],
+            )
 
     html = styler.to_html()
     wrap_class = "hni-table-wrap hni-table-scroll" if scroll else "hni-table-wrap"
@@ -709,7 +738,10 @@ else:
     st.markdown(
         f'<div class="section-caption">Computed over the selected period, measured against '
         f'{reference_benchmark}. Standard deviation is annualized; up/down capture reflect '
-        f'compounded returns on days the benchmark was positive / negative respectively.</div>',
+        f'compounded returns on days the benchmark was positive / negative respectively. '
+        f'A negative Down Capture means the fund posted a <em>positive</em> return on days the '
+        f'benchmark fell — a defensive characteristic, and favourable (shown in green) even '
+        f'though the number itself is negative.</div>',
         unsafe_allow_html=True,
     )
     render_table(
@@ -717,8 +749,12 @@ else:
         decimals=1,
         pct_cols=["Std Dev (Ann., %)", "Max Drawdown (%)", "Up Capture (%)", "Down Capture (%)"],
         ratio_cols=["Capture Ratio"],
-        color_pct_cols=["Max Drawdown (%)", "Up Capture (%)", "Down Capture (%)"],
+        color_pct_cols=["Max Drawdown (%)"],
         color_ratio_cols=["Capture Ratio"],
+        color_pivot_cols={
+            "Up Capture (%)": (100.0, True),    # higher = captured more upside = favourable
+            "Down Capture (%)": (100.0, False), # lower = captured less downside = favourable
+        },
     )
 
 st.markdown('<hr class="section-divider" />', unsafe_allow_html=True)
@@ -758,7 +794,10 @@ with st.expander("Methodology"):
   year are annualized (CAGR); shorter periods are absolute returns.
 - **Standard deviation**: annualized volatility of daily returns over the selected period.
 - **Up / Down capture**: the proportion of the benchmark's compounded gain (or loss) that a fund
-  captured on days the benchmark was positive (or negative) over the selected period.
+  captured on days the benchmark was positive (or negative) over the selected period. A **negative
+  Down Capture** means the fund posted a positive return on days the benchmark fell — i.e. it moved
+  in the opposite direction to the market on those days. This is a genuinely defensive characteristic
+  and is treated as favourable (shown in green), even though the figure itself is negative.
 - **Capture ratio**: up-capture divided by down-capture — a ratio above 1.0 indicates the fund
   has, over this period, captured more upside than downside relative to the benchmark.
 - **Maximum drawdown**: the largest peak-to-trough decline in NAV within the selected period.
