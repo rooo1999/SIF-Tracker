@@ -422,7 +422,55 @@ def build_risk_table(window: pd.DataFrame, cols, reference_benchmark: str):
 
 
 # --------------------------------------------------------------------------
-# Table rendering — precise per-table decimal control + rich dark styling.
+# Monthly returns (Year x Month grid) — same data serves as both the
+# "monthly return table" and the "monthly heatmap": the heatmap is just
+# this table with the cell shading added, not a separate calculation.
+# --------------------------------------------------------------------------
+MONTH_ORDER = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+
+
+def build_monthly_returns(full_df: pd.DataFrame, col: str, as_of: pd.Timestamp = None) -> pd.DataFrame:
+    """Year x Month grid of monthly returns (%) for `col`, using its full
+    available history up to `as_of` (not limited to the sidebar's selected
+    period — a multi-year view is the whole point of this table). Each
+    monthly return is NAV(month-end) / NAV(previous month-end) - 1. An
+    'Annual' column gives the compounded return for each calendar year.
+    Returns an empty DataFrame if there's under two months of history.
+    """
+    series = full_df[["Date", col]].dropna().copy()
+    if as_of is not None:
+        series = series[series["Date"] <= as_of]
+    if series.empty:
+        return pd.DataFrame()
+
+    series = series.set_index("Date")[col].sort_index()
+    monthly_nav = series.resample("ME").last()
+    monthly_ret = monthly_nav.pct_change().dropna() * 100
+
+    if monthly_ret.empty:
+        return pd.DataFrame()
+
+    result = monthly_ret.reset_index()
+    result.columns = ["Date", "Return"]
+    result["Year"] = result["Date"].dt.year
+    result["Month"] = result["Date"].dt.strftime("%b")
+
+    pivot = result.pivot(index="Year", columns="Month", values="Return")
+    pivot = pivot.reindex(columns=[m for m in MONTH_ORDER if m in pivot.columns])
+
+    def _compound_year(row):
+        vals = row.dropna()
+        if vals.empty:
+            return np.nan
+        return ((vals / 100 + 1).prod() - 1) * 100
+
+    pivot["Annual"] = pivot.apply(_compound_year, axis=1)
+    pivot.index.name = "Year"
+    pivot.index = pivot.index.astype(str)
+    return pivot
+
+
+
 # Rendered as static HTML (via pandas Styler) rather than st.dataframe so
 # the full HNI table design (header, banding, colours) is guaranteed to
 # render, independent of the Streamlit grid component's own theming.
@@ -516,6 +564,49 @@ def render_table(
     st.markdown(f'<div class="{wrap_class}">{html}</div>', unsafe_allow_html=True)
 
 
+def _heatmap_cell_color(val, vmax):
+    """Background tint whose intensity scales with |val| relative to vmax
+    (the largest magnitude in that column-group), green for gains, red for
+    losses — a translucent overlay on the dark card background so text
+    stays legible at every intensity."""
+    if pd.isna(val):
+        return f"color: {MUTED}; background-color: {CARD_BG_ALT};"
+    if not np.isfinite(vmax) or vmax <= 0:
+        vmax = 1.0
+    intensity = min(abs(val) / vmax, 1.0)
+    alpha = 0.10 + 0.38 * intensity
+    rgb = "62, 207, 142" if val >= 0 else "255, 107, 107"
+    weight = 700 if intensity > 0.45 else 500
+    return f"background-color: rgba({rgb}, {alpha:.3f}); color: {PRIMARY}; font-weight: {weight};"
+
+
+def render_heatmap(df: pd.DataFrame, decimals=2, annual_col="Annual"):
+    """Render a Year x Month returns grid as a static, colour-shaded table —
+    this IS the monthly return table; the shading is layered on top of the
+    same numbers, not a separate calculation."""
+    month_cols = [c for c in df.columns if c != annual_col]
+
+    fmt = {c: f"{{:.{decimals}f}}%" for c in df.columns}
+    styler = df.style.format(fmt, na_rep="—")
+    map_fn = styler.map if hasattr(styler, "map") else styler.applymap
+
+    if month_cols:
+        monthly_vals = df[month_cols].values.astype(float)
+        finite = monthly_vals[np.isfinite(monthly_vals)]
+        vmax_monthly = np.max(np.abs(finite)) if finite.size else 1.0
+        for c in month_cols:
+            styler = map_fn(lambda v, vmax=vmax_monthly: _heatmap_cell_color(v, vmax), subset=[c])
+
+    if annual_col in df.columns:
+        annual_vals = df[annual_col].values.astype(float)
+        finite_a = annual_vals[np.isfinite(annual_vals)]
+        vmax_annual = np.max(np.abs(finite_a)) if finite_a.size else 1.0
+        styler = map_fn(lambda v, vmax=vmax_annual: _heatmap_cell_color(v, vmax), subset=[annual_col])
+
+    html = styler.to_html()
+    st.markdown(f'<div class="hni-table-wrap">{html}</div>', unsafe_allow_html=True)
+
+
 # --------------------------------------------------------------------------
 # Header
 # --------------------------------------------------------------------------
@@ -532,6 +623,7 @@ st.markdown(
 # --------------------------------------------------------------------------
 import upvaly_client as uc
 import data_pipeline as dp
+import benchmark_client as bc
 
 if "refresh_counter" not in st.session_state:
     st.session_state.refresh_counter = 0
@@ -584,6 +676,25 @@ if not fetch_ok:
 funds, benchmarks = get_series_names(df)
 all_cols = funds + benchmarks
 
+# If a benchmark's data source (yfinance) failed on every attempt so far,
+# its column never gets created at all — this is different from a benchmark
+# being incomplete for a specific date range, and no amount of changing the
+# date range will fix it. Surface it clearly instead of letting it vanish
+# without explanation.
+EXPECTED_BENCHMARKS = ["Nifty 50", "Nifty 500"]
+missing_benchmarks = [b for b in EXPECTED_BENCHMARKS if b not in df.columns]
+if missing_benchmarks:
+    fetch_error_detail = "; ".join(
+        f"{b}: {bc.LAST_FETCH_ERRORS[b]}" for b in missing_benchmarks if b in bc.LAST_FETCH_ERRORS
+    )
+    st.warning(
+        f"{', '.join(missing_benchmarks)} data is currently unavailable from the market data "
+        "provider (this is unrelated to the selected date range). Fund figures above are "
+        "unaffected. Try \u201cRefresh data\u201d in the sidebar; if it persists, the data source "
+        "may need attention."
+        + (f"\n\nDetail: {fetch_error_detail}" if fetch_error_detail else "")
+    )
+
 if df["Date"].isna().all() or df.empty:
     st.error("No usable data is currently available.")
     st.stop()
@@ -617,6 +728,7 @@ available_funds, window, actual_start, actual_end = filter_available_in_window(
 available_benchmarks = [b for b in show_benchmarks if window[b].notna().all()] if not window.empty else []
 
 excluded_funds = [f for f in funds if f not in available_funds]
+excluded_benchmarks = [b for b in show_benchmarks if b not in available_benchmarks]
 
 plot_cols = available_funds + available_benchmarks
 
@@ -637,6 +749,14 @@ if excluded_funds:
     st.markdown(
         f'<div class="section-caption">Not shown (incomplete data for this period): '
         f'{", ".join(excluded_funds)}</div>',
+        unsafe_allow_html=True,
+    )
+
+if excluded_benchmarks:
+    st.markdown(
+        f'<div class="section-caption">Benchmark not shown for this period (data incomplete for '
+        f'one or more days in this window — try a slightly shorter or earlier end date): '
+        f'{", ".join(excluded_benchmarks)}</div>',
         unsafe_allow_html=True,
     )
 
@@ -771,6 +891,45 @@ render_table(
 
 st.markdown('<hr class="section-divider" />', unsafe_allow_html=True)
 
+# --------------------------------------------------------------------------
+# Monthly Returns Heatmap — Year x Month grid, full history as-of end_date.
+# A dropdown picks the fund (there can be many); benchmarks are shown
+# directly below since there are typically only one or two.
+# --------------------------------------------------------------------------
+st.markdown("#### Monthly Returns Heatmap")
+st.markdown(
+    '<div class="section-caption">Each cell is a calendar-month return; shading intensity reflects the '
+    'size of that month\'s return (green = gain, red = loss) relative to the largest move in the table, '
+    'so the heatmap and the underlying monthly return table are the same view — the numbers are shown '
+    'directly in each cell. The Annual column is the compounded return for that calendar year. Computed '
+    'on full available history as of the selected end date, independent of the date range selected above.'
+    '</div>',
+    unsafe_allow_html=True,
+)
+
+if funds:
+    heatmap_fund = st.selectbox("Select a fund", funds, index=0, key="heatmap_fund_select")
+    monthly_fund = build_monthly_returns(df, heatmap_fund, as_of=actual_end)
+    if monthly_fund.empty:
+        st.info(f"Not enough monthly history yet for {heatmap_fund}.")
+    else:
+        render_heatmap(monthly_fund)
+else:
+    st.info("No funds available for this selection.")
+
+if show_benchmarks:
+    st.markdown("##### Benchmark")
+    for b in show_benchmarks:
+        monthly_bench = build_monthly_returns(df, b, as_of=actual_end)
+        if monthly_bench.empty:
+            st.info(f"Not enough monthly history yet for {b}.")
+            continue
+        if len(show_benchmarks) > 1:
+            st.markdown(f"**{b}**")
+        render_heatmap(monthly_bench)
+
+st.markdown('<hr class="section-divider" />', unsafe_allow_html=True)
+
 with st.expander("Methodology"):
     st.markdown(
         """
@@ -790,5 +949,10 @@ with st.expander("Methodology"):
 - **Capture ratio**: up-capture divided by down-capture — a ratio above 1.0 indicates the fund
   has, over this period, captured more upside than downside relative to the benchmark.
 - **Maximum drawdown**: the largest peak-to-trough decline in NAV within the selected period.
+- **Monthly returns heatmap**: each month's return is NAV at that month's last trading day versus
+  NAV at the prior month's last trading day. This uses the fund's/benchmark's full available
+  history (not the date range selected above), as of the selected end date, since a multi-year
+  view is the point of this table. The Annual column compounds that year's monthly returns.
 """
     )
+
