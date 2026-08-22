@@ -213,6 +213,25 @@ st.markdown(
             max-height: 420px;
             overflow-y: auto;
         }}
+
+        /* Heatmap tables have 13+ columns (Year + 12 months + Annual) — use
+           tighter padding/type so everything fits without horizontal scroll. */
+        .hni-heatmap-table thead th {{
+            padding: 10px 8px;
+            font-size: 0.66rem;
+        }}
+        .hni-heatmap-table tbody th {{
+            padding: 8px 10px;
+            font-size: 0.82rem;
+        }}
+        .hni-heatmap-table tbody td {{
+            padding: 8px 6px;
+            font-size: 0.78rem;
+        }}
+        .hni-heatmap-table thead th:last-child,
+        .hni-heatmap-table tbody td:last-child {{
+            border-left: 1px solid {BORDER};
+        }}
     </style>
     """,
     unsafe_allow_html=True,
@@ -429,15 +448,24 @@ def build_risk_table(window: pd.DataFrame, cols, reference_benchmark: str):
 MONTH_ORDER = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
 
 
-def build_monthly_returns(full_df: pd.DataFrame, col: str, as_of: pd.Timestamp = None) -> pd.DataFrame:
+def build_monthly_returns(
+    full_df: pd.DataFrame, col: str, as_of: pd.Timestamp = None, since: pd.Timestamp = None
+) -> pd.DataFrame:
     """Year x Month grid of monthly returns (%) for `col`, using its full
     available history up to `as_of` (not limited to the sidebar's selected
     period — a multi-year view is the whole point of this table). Each
     monthly return is NAV(month-end) / NAV(previous month-end) - 1. An
     'Annual' column gives the compounded return for each calendar year.
+
+    `since`, if given, drops any data before that date first — used to
+    trim a benchmark's heatmap down to the same starting point as a
+    shorter-history fund, so the two are directly comparable year-for-year.
+
     Returns an empty DataFrame if there's under two months of history.
     """
     series = full_df[["Date", col]].dropna().copy()
+    if since is not None:
+        series = series[series["Date"] >= since]
     if as_of is not None:
         series = series[series["Date"] <= as_of]
     if series.empty:
@@ -604,7 +632,7 @@ def render_heatmap(df: pd.DataFrame, decimals=2, annual_col="Annual"):
         styler = map_fn(lambda v, vmax=vmax_annual: _heatmap_cell_color(v, vmax), subset=[annual_col])
 
     html = styler.to_html()
-    st.markdown(f'<div class="hni-table-wrap">{html}</div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="hni-table-wrap hni-heatmap-table">{html}</div>', unsafe_allow_html=True)
 
 
 # --------------------------------------------------------------------------
@@ -902,13 +930,17 @@ st.markdown(
     'size of that month\'s return (green = gain, red = loss) relative to the largest move in the table, '
     'so the heatmap and the underlying monthly return table are the same view — the numbers are shown '
     'directly in each cell. The Annual column is the compounded return for that calendar year. Computed '
-    'on full available history as of the selected end date, independent of the date range selected above.'
-    '</div>',
+    'on full available history as of the selected end date, independent of the date range selected above. '
+    'The benchmark heatmap below is trimmed to start from the selected fund\'s own inception, so the two '
+    'line up year-for-year for easy comparison.</div>',
     unsafe_allow_html=True,
 )
 
+fund_inception = None
 if funds:
     heatmap_fund = st.selectbox("Select a fund", funds, index=0, key="heatmap_fund_select")
+    fund_dates = df[["Date", heatmap_fund]].dropna()["Date"]
+    fund_inception = fund_dates.min() if not fund_dates.empty else None
     monthly_fund = build_monthly_returns(df, heatmap_fund, as_of=actual_end)
     if monthly_fund.empty:
         st.info(f"Not enough monthly history yet for {heatmap_fund}.")
@@ -920,7 +952,7 @@ else:
 if show_benchmarks:
     st.markdown("##### Benchmark")
     for b in show_benchmarks:
-        monthly_bench = build_monthly_returns(df, b, as_of=actual_end)
+        monthly_bench = build_monthly_returns(df, b, as_of=actual_end, since=fund_inception)
         if monthly_bench.empty:
             st.info(f"Not enough monthly history yet for {b}.")
             continue
